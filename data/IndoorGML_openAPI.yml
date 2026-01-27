@@ -390,6 +390,12 @@ components:
       properties:
         id: { type: string }
         featureType: { type: string, enum: [DualSpaceLayer] }
+        creationDate: 
+          type: string
+          format: date-time
+        terminationDate: 
+          type: string
+          format: date-time
         isLogical: { type: boolean }
         isDirected: { type: boolean }
         nodeMember:
@@ -641,8 +647,6 @@ components:
         featureType:
           type: string
           enum: [IndoorFeatures]
-        id:
-          type: string
         geometry:
           $ref: '#/components/schemas/geometryGeoJSON'
         properties:

@@ -322,10 +322,13 @@ def collection_items(collection_id: str, item_id: str | None = None):
                 indoorgml.manage_collection_item, request,
                 'delete', collection_id,
                 item_id)
-        else:
+        elif request.method == 'GET':
             return execute_from_flask(
                 indoorgml.get_collection_item, request,
                 collection_id, item_id)
+        else:
+            return api_.get_exception(405, {}, request.format,
+                                      'MethodNotAllowed', 'Method not allowed')
     else:
         # collection in config
         if collection_id in collections:

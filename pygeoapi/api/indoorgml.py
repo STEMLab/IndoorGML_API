@@ -3,6 +3,8 @@ import json
 import random
 from http import HTTPStatus
 from typing import Tuple
+
+import urllib
 from pygeoapi.plugin import PLUGINS
 from pygeoapi.api import API, APIRequest, SYSTEM_LOCALE, F_HTML, F_JSON 
 import pygeoapi.api as core_api
@@ -441,7 +443,6 @@ def get_collection_item(api: API, request: APIRequest, dataset, identifier) -> T
 
     try:
         pidb_provider.connect()
-        result = pidb_provider.get_feature(collection_str_id, ifeature_str_id)
 
         # --- Pass level to the provider ---
         result = pidb_provider.get_feature(
@@ -457,13 +458,21 @@ def get_collection_item(api: API, request: APIRequest, dataset, identifier) -> T
                 HTTPStatus.NOT_FOUND,
                 headers, request.format, 'NotFound', msg)
         
+       # --- Construct Self Link with Query Params ---
         base_url = f"{api.config['server']['url']}/collections/{collection_str_id}/items/{ifeature_str_id}"
+        
+        self_href = base_url
+        
+        # If level parameter exists, append it to the URL
+        if level:
+            query_params = {'level': level}
+            self_href += "?" + urllib.parse.urlencode(query_params)
 
         result['links'].append({
-            "href": base_url,
+            "href": self_href,
             "rel": "self",
             "type": "application/geo+json",
-            "title": "Indoorfeature metadata"
+            "title": "IndoorFeature Metadata"
         })
 
     except (Exception, psycopg2.Error) as error:
@@ -658,28 +667,44 @@ def get_collection_item_layers(api: API, request: APIRequest, dataset, identifie
                                         ,limit=limit, offset=offset)
 
         # 4. Construct Lightweight Summary
-        
+        base_url = api.config['server']['url']
         for layer in data["layers"]:
-
-            base_url = api.config['server']['url']
-            layer['links']= [
+            layer['links'] = [
                 {
-                    "href": f"{base_url}/collections/{collection_str_id}/items/{ifeature_str_id}/layers/{layer.get("id")}",
+                    "href": f"{base_url}/collections/{collection_str_id}/items/{ifeature_str_id}/layers/{layer.get('id')}",
                     "rel": "item",
                     "type": "application/json",
                     "title": "Layer Detail"
                 }
             ]
 
+        # 5. Construct Self Link (With Query Params)
+        self_href = f"{base_url}/collections/{collection_str_id}/items/{ifeature_str_id}/layers"
+        
+        # Build dictionary of active parameters
+        query_params = {
+            'offset': offset,
+            'limit': limit
+        }
+        if theme:
+            query_params['theme'] = theme
+        if level:
+            query_params['level'] = level
+        
+        # Append query string
+        if query_params:
+            self_href += "?" + urllib.parse.urlencode(query_params)
+
         data['links'].append(
                 {
-                    "href": f"{base_url}/collections/{collection_str_id}/items/{ifeature_str_id}/layers",
+                    "href": self_href,
                     "rel": "self",
-                    "type": "application/json"
+                    "type": "application/json",
+                    "title": "Thematic Layers"
                 }
         )  
 
-        return headers, 200, to_json(data, api.pretty_print)
+        return headers, HTTPStatus.OK, to_json(data, api.pretty_print)
 
     except Exception as e:
         LOGGER.error(f"Error fetching layers: {e}")
@@ -721,12 +746,19 @@ def get_collection_item_layer(api: API, request: APIRequest, dataset, identifier
                 HTTPStatus.NOT_FOUND,
                 headers, request.format, 'NotFound', msg)
         
+        base_url = f"{api.config['server']['url']}/collections/{collection_str_id}/items/{ifeature_str_id}/layers/{layer_str_id}"
+        self_href = base_url
+
+        if level:
+            query_params = {'level': level}
+            self_href += "?" + urllib.parse.urlencode(query_params)
+
         result["links"].append(
                 {
-                    "href": f"{api.config['server']['url']}/collections/{collection_str_id}/items/{ifeature_str_id}/layers/{layer_str_id}",
+                    "href": self_href,
                     "rel": "self",
                     "type": "application/json",
-                    "title": "InterLayer Connections"
+                    "title": "Thematic Layer"
                 }
             )
         
@@ -1095,34 +1127,64 @@ def get_dual(api: API, request: APIRequest, collection_id: str, item_id: str, la
     headers = request.get_response_headers(SYSTEM_LOCALE)
     provider = PostgresIndoorDB()
 
+    # 1. Extract and Validate Query Parameters (minWeight, maxWeight)
+    min_weight_param = request.params.get('minWeight')
+    max_weight_param = request.params.get('maxWeight')
+
     try:
-        # Call the new Provider function
-        # It returns 3 distinct objects: Metadata, Nodes List, Edges List
-        meta, nodes, edges = provider.get_dual_features_and_metadata(collection_id, item_id, layer_id)
+        min_w = float(min_weight_param) if min_weight_param is not None else None
+        max_w = float(max_weight_param) if max_weight_param is not None else None
+    except ValueError:
+        return api.get_exception(
+            HTTPStatus.BAD_REQUEST,
+            headers, request.format, 'InvalidParameter', "Weights must be valid numbers")
+
+    try:
+        # 2. Call the Provider function with the extracted weights
+        meta, nodes, edges = provider.get_dual_features_and_metadata(
+            collection_id, 
+            item_id, 
+            layer_id, 
+            min_weight=min_w, 
+            max_weight=max_w
+        )
 
         # Handle 404
         if not meta:
              return api.get_exception(HTTPStatus.NOT_FOUND, headers, request.format, 'NotFound', 'Layer not found')
 
+        # Construct Self Link with Query Params
+        base_url = f"{api.config['server']['url']}/collections/{collection_id}/items/{item_id}/layers/{layer_id}/dual"
+
+        # Build query params dictionary
+        query_params = {}
+        if min_w is not None:
+            query_params['minWeight'] = min_w
+        if max_w is not None:
+            query_params['maxWeight'] = max_w
+            
+        # Append query string if params exist
+        self_href = base_url
+        if query_params:
+            self_href += "?" + urllib.parse.urlencode(query_params)
+
         # Construct Response
         response = {
             "id": meta['dualspace_id_str'] if meta['dualspace_id_str'] else f"Dual_{layer_id}",
             "featureType": "DualSpaceLayer",
-            "isLogical": meta.get('is_logical', False),
-            "isDirected": meta.get('is_directed', False),
+            # Ensure keys match your DB columns (e.g. is_logical vs isLogical)
+            "isLogical": meta.get('is_logical', True), 
+            "isDirected": meta.get('is_directed', True),
             "creationDatetime": meta['d_creation_datetime'].isoformat() if meta.get('d_creation_datetime') else None,
             "terminationDatetime": meta['d_termination_datetime'].isoformat() if meta.get('d_termination_datetime') else None,
             
-            # DIRECT ASSIGNMENT: The Provider has already formatted these correctly
-            # Nodes now include their "connects" array (edges sprouting from them)
+            # DIRECT ASSIGNMENT: The Provider has filtered these and injected 'connects'
             "nodeMember": nodes, 
-            
-            # Edges now include their "connects" array (source and target)
             "edgeMember": edges,
             
             "links": [
                 {
-                    "href": f"{api.config['server']['url']}/collections/{collection_id}/items/{item_id}/layers/{layer_id}/dual",
+                    "href": self_href,
                     "rel": "self",
                     "type": "application/json",
                     "title": "Dual Space Layer"
